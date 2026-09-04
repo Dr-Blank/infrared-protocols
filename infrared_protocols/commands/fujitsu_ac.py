@@ -66,7 +66,6 @@ _REST_LENGTH_BYTE = 6
 _PROTOCOL_BYTE = 7
 _CHECKSUM_FIRST_BYTE = 7
 
-
 # Byte 14 holds the outside-quiet flag, and bit 5 is set in every frame
 _FLAGS_BYTE = 14
 _FLAGS_BASE = 0x20
