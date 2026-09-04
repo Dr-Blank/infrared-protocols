@@ -415,19 +415,19 @@ class FujitsuAcFixedCommand(_FujitsuAcMessage):
     """Fujitsu General air-conditioner fixed-code command.
 
     Some remote buttons emit a whole 7-byte util message rather than a state frame.
-    ``command`` is its message type byte, which is all such a message carries; the
+    ``code`` is its message type byte, which is all such a message carries; the
     signature and the checksum are the same for every one. The codes themselves are
     in :mod:`infrared_protocols.codes.fujitsu.ac`.
     """
 
-    command: int
+    code: int
 
-    def __init__(self, *, command: int, modulation: int = 38000) -> None:
+    def __init__(self, *, code: int, modulation: int = 38000) -> None:
         """Initialize the Fujitsu General AC fixed-code command."""
-        if not 0 <= command <= 0xFF:
-            raise ValueError(f"command must be a byte, got {command:#x}")
-        self.command = command
-        super().__init__(data=_util_message(command), modulation=modulation)
+        if not 0 <= code <= 0xFF:
+            raise ValueError(f"code must be a byte, got {code:#x}")
+        self.code = code
+        super().__init__(data=_util_message(code), modulation=modulation)
 
     @classmethod
     def from_raw_timings(cls, timings: list[int]) -> Self | None:
@@ -442,4 +442,4 @@ class FujitsuAcFixedCommand(_FujitsuAcMessage):
             return None
         if message[_UTIL_LENGTH - 1] != _util_checksum(message):
             return None
-        return cls(command=message[_TYPE_BYTE])
+        return cls(code=message[_TYPE_BYTE])

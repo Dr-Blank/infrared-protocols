@@ -2,7 +2,7 @@
 
 import pytest
 
-from infrared_protocols.codes.fujitsu.ac import FujitsuAcButton
+from infrared_protocols.codes.fujitsu.ac import FujitsuACCode
 from infrared_protocols.commands.fujitsu_ac import (
     MAX_TEMP_F,
     MIN_TEMP_F,
@@ -341,7 +341,7 @@ def test_decode_captured_state(
 
 def test_encode_power_off() -> None:
     """The power-off message must be the 7-byte util message."""
-    timings = FujitsuAcFixedCommand(command=FujitsuAcButton.POWER_OFF).get_raw_timings()
+    timings = FujitsuAcFixedCommand(code=FujitsuACCode.POWER_OFF).get_raw_timings()
 
     assert _transmitted_bits(timings, 7) == _OFF_BITS
 
@@ -353,7 +353,7 @@ def test_decode_power_off() -> None:
     command = FujitsuAcFixedCommand.from_raw_timings(timings)
 
     assert command is not None
-    assert command.command == FujitsuAcButton.POWER_OFF
+    assert command.code == FujitsuACCode.POWER_OFF
     assert FujitsuAcCommand.from_raw_timings(timings) is None
 
 
@@ -396,54 +396,54 @@ def test_reencoding_a_decoded_command_reproduces_the_burst(
     assert decoded.get_raw_timings() == timings
 
 
-@pytest.mark.parametrize("button", list(FujitsuAcButton))
-def test_fixed_codes_roundtrip(button: FujitsuAcButton) -> None:
+@pytest.mark.parametrize("button", list(FujitsuACCode))
+def test_fixed_codes_roundtrip(button: FujitsuACCode) -> None:
     """Each fixed code must encode to its type byte and decode back."""
     timings = button.to_command().get_raw_timings()
 
     command = FujitsuAcFixedCommand.from_raw_timings(timings)
 
     assert command is not None
-    assert command.command == button.value
+    assert command.code == button.value
 
 
 @pytest.mark.parametrize(
     ("button", "expected"),
     [
-        pytest.param(FujitsuAcButton.POWER_OFF, "14 63 00 10 10 02 FD", id="power_off"),
-        pytest.param(FujitsuAcButton.TEST_RUN, "14 63 00 10 10 03 FC", id="test_run"),
-        pytest.param(FujitsuAcButton.ECONOMY, "14 63 00 10 10 09 F6", id="economy"),
-        pytest.param(FujitsuAcButton.POWERFUL, "14 63 00 10 10 39 C6", id="powerful"),
+        pytest.param(FujitsuACCode.POWER_OFF, "14 63 00 10 10 02 FD", id="power_off"),
+        pytest.param(FujitsuACCode.TEST_RUN, "14 63 00 10 10 03 FC", id="test_run"),
+        pytest.param(FujitsuACCode.ECONOMY, "14 63 00 10 10 09 F6", id="economy"),
+        pytest.param(FujitsuACCode.POWERFUL, "14 63 00 10 10 39 C6", id="powerful"),
         pytest.param(
-            FujitsuAcButton.WLAN_ENABLE, "14 63 00 10 10 52 AD", id="wlan_enable"
+            FujitsuACCode.WLAN_ENABLE, "14 63 00 10 10 52 AD", id="wlan_enable"
         ),
         pytest.param(
-            FujitsuAcButton.WLAN_DISABLE, "14 63 00 10 10 53 AC", id="wlan_disable"
+            FujitsuACCode.WLAN_DISABLE, "14 63 00 10 10 53 AC", id="wlan_disable"
         ),
         pytest.param(
-            FujitsuAcButton.WLAN_CONNECT_METHOD_1,
+            FujitsuACCode.WLAN_CONNECT_METHOD_1,
             "14 63 00 10 10 54 AB",
             id="wlan_connect_method_1",
         ),
         pytest.param(
-            FujitsuAcButton.WLAN_CONNECT_METHOD_2,
+            FujitsuACCode.WLAN_CONNECT_METHOD_2,
             "14 63 00 10 10 55 AA",
             id="wlan_connect_method_2",
         ),
         pytest.param(
-            FujitsuAcButton.STEP_VERTICAL_LOUVRE,
+            FujitsuACCode.STEP_VERTICAL_LOUVRE,
             "14 63 00 10 10 6C 93",
             id="step_vertical_louvre",
         ),
         pytest.param(
-            FujitsuAcButton.STEP_HORIZONTAL_LOUVRE,
+            FujitsuACCode.STEP_HORIZONTAL_LOUVRE,
             "14 63 00 10 10 79 86",
             id="step_horizontal_louvre",
         ),
     ],
 )
 def test_fixed_code_bytes_match_the_physical_remote(
-    button: FujitsuAcButton, expected: str
+    button: FujitsuACCode, expected: str
 ) -> None:
     """Pin each util message to the bytes a physical ARREW4E remote sent for it."""
     timings = button.to_command().get_raw_timings()
@@ -779,16 +779,16 @@ def test_decode_keeps_an_unnamed_util_type() -> None:
     command = FujitsuAcFixedCommand.from_raw_timings(_timings_from_bytes(message))
 
     assert command is not None
-    assert command.command == 0x7F
+    assert command.code == 0x7F
 
 
 @pytest.mark.parametrize(
-    "command", [pytest.param(-1, id="negative"), pytest.param(0x100, id="too_wide")]
+    "code", [pytest.param(-1, id="negative"), pytest.param(0x100, id="too_wide")]
 )
-def test_fixed_code_must_be_a_byte(command: int) -> None:
+def test_fixed_code_must_be_a_byte(code: int) -> None:
     """The message carries one type byte, so nothing wider can be sent."""
     with pytest.raises(ValueError, match="must be a byte"):
-        FujitsuAcFixedCommand(command=command)
+        FujitsuAcFixedCommand(code=code)
 
 
 def test_decode_tolerates_measured_receiver_distortion() -> None:

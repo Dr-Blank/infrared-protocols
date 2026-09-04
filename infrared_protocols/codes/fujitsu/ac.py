@@ -18,7 +18,7 @@ from ...commands import Command
 from ...commands.fujitsu_ac import FujitsuAcFixedCommand
 
 
-class FujitsuAcButton(IntEnum):
+class FujitsuACCode(IntEnum):
     """Fujitsu General AC fixed-code button; value is the message type byte."""
 
     POWER_OFF = 0x02
@@ -61,4 +61,4 @@ class FujitsuAcButton(IntEnum):
 
     def to_command(self) -> Command:
         """Build a Fujitsu General AC fixed-code command for this button."""
-        return FujitsuAcFixedCommand(command=self.value)
+        return FujitsuAcFixedCommand(code=self.value)
