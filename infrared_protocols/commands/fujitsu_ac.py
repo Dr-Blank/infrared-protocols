@@ -19,8 +19,8 @@ bitfield:
   byte 15:      checksum, the two's complement of bytes 7-14
 
 Every other message is a 7-byte util message: the common header plus a checksum byte
-holding the one's complement of the type byte. Some are stateless actions the unit
-itself keeps the state for, which is why the remote sends the same bytes every time.
+holding the one's complement of the type byte. Those carry no state, so this module
+only recognises them well enough to keep them out of the state decoder.
 
 The timers are not modelled, so decoding is lossy: a frame that sets one yields the
 state it also carries, and re-encoding leaves the timer clear.
@@ -66,7 +66,6 @@ _REST_LENGTH_BYTE = 6
 _PROTOCOL_BYTE = 7
 _CHECKSUM_FIRST_BYTE = 7
 
-_UTIL_LENGTH = 7
 
 # Byte 14 holds the outside-quiet flag, and bit 5 is set in every frame
 _FLAGS_BYTE = 14
@@ -216,18 +215,6 @@ def _state_checksum(message: list[int]) -> int:
     return -sum(message[_CHECKSUM_FIRST_BYTE : _STATE_LENGTH - 1]) & 0xFF
 
 
-def _util_checksum(message: list[int]) -> int:
-    """Return the util message checksum: the one's complement of the type byte."""
-    return ~message[_TYPE_BYTE] & 0xFF
-
-
-def _util_message(message_type: int) -> bytes:
-    """Build a 7-byte util message of the given type."""
-    message = [*_COMMON_SIGNATURE, message_type, 0]
-    message[_UTIL_LENGTH - 1] = _util_checksum(message)
-    return bytes(message)
-
-
 def _state_message(
     *,
     protocol: FujitsuAcProtocol,
@@ -265,25 +252,7 @@ def _state_message(
     return bytes(message)
 
 
-class _FujitsuAcMessage(AehaCommand):
-    """Shared physical layer for the two Fujitsu General message kinds."""
-
-    TIMING = _FUJITSU_TIMING
-
-    @classmethod
-    def _common_message(cls, timings: list[int]) -> list[int] | None:
-        """Decode timings into a message opening with the Fujitsu General signature."""
-        data = cls._decode_data(timings)
-        if (
-            data is None
-            or len(data) < _COMMON_LENGTH
-            or tuple(data[:_TYPE_BYTE]) != _COMMON_SIGNATURE
-        ):
-            return None
-        return list(data)
-
-
-class FujitsuAcCommand(_FujitsuAcMessage):
+class FujitsuAcCommand(AehaCommand):
     """Fujitsu General air-conditioner state IR command.
 
     ``power`` is not an on/off switch but the flag that starts a unit which is
@@ -304,6 +273,8 @@ class FujitsuAcCommand(_FujitsuAcMessage):
     also how the 10 C minimum-heat function is sent, combined with
     :attr:`FujitsuAcMode.FAN_ONLY`.
     """
+
+    TIMING = _FUJITSU_TIMING
 
     protocol: FujitsuAcProtocol
     power: bool
@@ -360,12 +331,23 @@ class FujitsuAcCommand(_FujitsuAcMessage):
         )
 
     @classmethod
+    def _common_message(cls, timings: list[int]) -> list[int] | None:
+        """Decode timings into a message opening with the Fujitsu General signature."""
+        data = cls._decode_data(timings)
+        if (
+            data is None
+            or len(data) < _COMMON_LENGTH
+            or tuple(data[:_TYPE_BYTE]) != _COMMON_SIGNATURE
+        ):
+            return None
+        return list(data)
+
+    @classmethod
     def from_raw_timings(cls, timings: list[int]) -> Self | None:
         """Decode raw IR timings into a FujitsuAcCommand.
 
         Returns a FujitsuAcCommand if the timings carry a state message, or None
-        otherwise. A util message carries no state, so it decodes to None here and to
-        a :class:`FujitsuAcFixedCommand` instead.
+        otherwise. A util message carries no state, so it decodes to None here.
         """
         message = cls._common_message(timings)
         if message is None or message[_TYPE_BYTE] != _STATE_TYPE:
@@ -409,37 +391,3 @@ class FujitsuAcCommand(_FujitsuAcMessage):
             clean=bool(_get_field(message, _CLEAN)),
             outside_quiet=bool(message[_FLAGS_BYTE] & _OUTSIDE_QUIET_BIT),
         )
-
-
-class FujitsuAcFixedCommand(_FujitsuAcMessage):
-    """Fujitsu General air-conditioner fixed-code command.
-
-    Some remote buttons emit a whole 7-byte util message rather than a state frame.
-    ``code`` is its message type byte, which is all such a message carries; the
-    signature and the checksum are the same for every one. The codes themselves are
-    in :mod:`infrared_protocols.codes.fujitsu.ac`.
-    """
-
-    code: int
-
-    def __init__(self, *, code: int, modulation: int = 38000) -> None:
-        """Initialize the Fujitsu General AC fixed-code command."""
-        if not 0 <= code <= 0xFF:
-            raise ValueError(f"code must be a byte, got {code:#x}")
-        self.code = code
-        super().__init__(data=_util_message(code), modulation=modulation)
-
-    @classmethod
-    def from_raw_timings(cls, timings: list[int]) -> Self | None:
-        """Decode raw IR timings into a FujitsuAcFixedCommand.
-
-        Returns any valid util message as its type byte, including types this library
-        does not name. A state message decodes to None here; use ``FujitsuAcCommand``
-        to read one as a mode, temperature, fan and swing instead.
-        """
-        message = cls._common_message(timings)
-        if message is None or len(message) != _UTIL_LENGTH:
-            return None
-        if message[_UTIL_LENGTH - 1] != _util_checksum(message):
-            return None
-        return cls(code=message[_TYPE_BYTE])
