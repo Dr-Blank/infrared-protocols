@@ -3,6 +3,7 @@
 import pytest
 
 from infrared_protocols.commands.fujitsu_ac import (
+    MAX_DEVICE_ID,
     MAX_TEMP_F,
     MIN_TEMP_F,
     FujitsuAcCommand,
@@ -28,9 +29,8 @@ _ONE_THRESHOLD = (_BIT_ONE_SPACE + _BIT_ZERO_SPACE) // 2
 # Last byte of a state message; the checksum covers bytes 7 up to it.
 _CHECKSUM_BYTE = 15
 
-# Bit strings in transmission order, from the captures documented in the ESPHome
-# fujitsu_general component. Bytes 0-7 and 11-14 are identical in every state message,
-# so each case below only names the three state bytes and the checksum that vary.
+# Bit strings in transmission order. Bytes 0-7 and 11-14 are identical in every state
+# message, so each case below only names the three state bytes and the checksum.
 _STATE_PREFIX = "".join(
     [
         "00101000",
@@ -429,6 +429,14 @@ def test_a_util_message_does_not_decode_as_state() -> None:
             ),
             id="extended_cool_24_5",
         ),
+        pytest.param(
+            FujitsuAcCommand(temperature=24, filter=True),
+            id="filter_on",
+        ),
+        pytest.param(
+            FujitsuAcCommand(temperature=24, device_id=MAX_DEVICE_ID),
+            id="highest_device_id",
+        ),
     ],
 )
 def test_reencoding_a_decoded_command_reproduces_the_burst(
@@ -441,6 +449,41 @@ def test_reencoding_a_decoded_command_reproduces_the_burst(
 
     assert decoded is not None
     assert decoded.get_raw_timings() == timings
+
+
+@pytest.mark.parametrize("device_id", range(MAX_DEVICE_ID + 1))
+def test_a_device_id_survives_a_round_trip(device_id: int) -> None:
+    """Byte 2 carries the id a remote is paired on, so decoding must keep it."""
+    command = FujitsuAcCommand(temperature=24, device_id=device_id)
+
+    message = _bits_to_bytes(_transmitted_bits(command.get_raw_timings(), 16))
+    decoded = FujitsuAcCommand.from_raw_timings(command.get_raw_timings())
+
+    assert (message[2] >> 4) & 0x03 == device_id
+    assert decoded is not None
+    assert decoded.device_id == device_id
+
+
+@pytest.mark.parametrize(
+    "device_id",
+    [pytest.param(-1, id="below_min"), pytest.param(MAX_DEVICE_ID + 1, id="above_max")],
+)
+def test_device_id_out_of_range(device_id: int) -> None:
+    """The field is two bits wide, so a larger id must not silently wrap."""
+    with pytest.raises(ValueError, match="device id"):
+        FujitsuAcCommand(temperature=24, device_id=device_id)
+
+
+def test_the_filter_flag_survives_a_round_trip() -> None:
+    """Byte 14 bit 3 is a state an ARRY4 remote sets, not a bit to drop."""
+    command = FujitsuAcCommand(temperature=24, filter=True)
+
+    message = _bits_to_bytes(_transmitted_bits(command.get_raw_timings(), 16))
+    decoded = FujitsuAcCommand.from_raw_timings(command.get_raw_timings())
+
+    assert message[14] & 0x08
+    assert decoded is not None
+    assert decoded.filter is True
 
 
 @pytest.mark.parametrize(
@@ -486,7 +529,10 @@ def test_default_modulation() -> None:
         pytest.param(10, 0x05, id="unknown_fan_field"),
         pytest.param(8, 0xF1, id="temperature_above_max"),
         pytest.param(8, 0xDC, id="temperature_off_the_standard_grid"),
+        pytest.param(8, 0xE3, id="standard_frame_claiming_fahrenheit"),
         pytest.param(14, 0x00, id="flags_base_bit_clear"),
+        # Byte 6 must count the bytes after it, since the checksum does not cover it.
+        pytest.param(6, 0xF6, id="corrupt_rest_length"),
     ],
 )
 def test_decode_rejects_invalid_state(byte_index: int, value: int) -> None:
@@ -530,7 +576,12 @@ def test_decode_rejects_invalid_timings(index: int, value: int) -> None:
 
 @pytest.mark.parametrize(
     "length",
-    [pytest.param(0, id="empty"), pytest.param(60, id="shorter_than_common_header")],
+    [
+        pytest.param(0, id="empty"),
+        pytest.param(60, id="shorter_than_common_header"),
+        # The header pair plus the 48 bit pairs of the 6-byte common header.
+        pytest.param(2 + 2 * 8 * 6, id="common_header_only"),
+    ],
 )
 def test_decode_rejects_truncated_timings(length: int) -> None:
     """Timings too short to hold a message must not decode."""
@@ -546,20 +597,10 @@ def test_decode_rejects_a_signature_without_a_type_byte() -> None:
     assert FujitsuAcCommand.from_raw_timings(timings) is None
 
 
-def test_decode_rejects_a_corrupt_rest_length() -> None:
-    """Byte 6 must count the bytes after it, since the checksum does not cover it."""
-    message = _heat_30_high_bytes()
-    message[6] ^= 0xFF
-    message[_CHECKSUM_BYTE] = _state_checksum(message)
-
-    assert FujitsuAcCommand.from_raw_timings(_timings_from_bytes(message)) is None
-
-
 _EXTENDED_PREFIX = [0x14, 0x63, 0x00, 0x10, 0x10, 0xFE, 0x09, 0x31]
 
-# Captured from a physical ARREW4E remote, which reports protocol 0x31 and steps in
-# 0.5 C. Its temperature field is scaled differently from the 0x30 family: the two
-# agree only at 24 C, which is why an encoder built for one looks correct there.
+# Protocol 0x31 frames, which step in 0.5 C. Their temperature field is scaled
+# differently from the 0x30 family, and the two agree only at 24 C.
 _EXTENDED_CAPTURES = [
     pytest.param([0x50, 0x01, 0x01, 0x20, 0x5D], 18.0, id="cool_18_0_the_cool_floor"),
     pytest.param([0x54, 0x01, 0x01, 0x20, 0x59], 18.5, id="cool_18_5"),
@@ -602,9 +643,8 @@ def test_encode_temperature_matches_a_physical_extended_remote(
     assert message[15] == tail[4]
 
 
-# Captured from the same physical ARREW4E remote with its display switched to
-# Fahrenheit. The field is the same six bits and spans the same 16-44 range in both
-# units, so only the scale changes: 60-88 F against 16-30 C.
+# The same 0x31 frames with the Fahrenheit flag set. The field is the same six bits
+# and spans the same 16-44 range in both units: 60-88 F against 16-30 C.
 _FAHRENHEIT_CAPTURES = [
     pytest.param(0x52, 64.0, id="cool_64f_the_cool_floor"),
     pytest.param(0x7A, 74.0, id="cool_74f"),
@@ -668,15 +708,6 @@ def test_standard_protocol_has_no_fahrenheit_setting() -> None:
         )
 
 
-def test_decode_rejects_a_standard_frame_claiming_fahrenheit() -> None:
-    """A 0x30 frame with the flag set is not something a remote sends."""
-    message = _heat_30_high_bytes()
-    message[8] |= 0x02
-    message[_CHECKSUM_BYTE] = _state_checksum(message)
-
-    assert FujitsuAcCommand.from_raw_timings(_timings_from_bytes(message)) is None
-
-
 @pytest.mark.parametrize(
     ("protocol", "is_fahrenheit", "expected"),
     [
@@ -693,7 +724,7 @@ def test_temperature_step(
 
 
 def test_the_two_protocols_agree_only_at_24_degrees() -> None:
-    """Pin the trap that hid this bug: both families encode 24 C identically."""
+    """Both families encode 24 C to the same field value."""
     common = {"temperature": 24, "mode": FujitsuAcMode.COOL}
     standard = FujitsuAcCommand(protocol=FujitsuAcProtocol.STANDARD, **common)
     extended = FujitsuAcCommand(protocol=FujitsuAcProtocol.EXTENDED, **common)
@@ -723,11 +754,7 @@ def test_the_two_protocols_disagree_everywhere_else(temperature: float) -> None:
 def test_decode_reads_the_family_out_of_the_frame(
     protocol: FujitsuAcProtocol, temperature: float
 ) -> None:
-    """A frame decodes on its own terms, whichever family sent it.
-
-    This is why an emitter of one family keeps a receiver of the other in sync, and
-    why sync alone never proves the configured family is right.
-    """
+    """A frame decodes on its own terms, whichever family sent it."""
     command = FujitsuAcCommand(
         protocol=protocol, temperature=temperature, mode=FujitsuAcMode.COOL
     )
@@ -739,21 +766,11 @@ def test_decode_reads_the_family_out_of_the_frame(
     assert decoded.temperature == temperature
 
 
-def test_decode_rejects_truncated_state_message() -> None:
-    """A state message cut short after the common header must not decode."""
-    # The common header is 6 bytes: its header pair plus 96 bit pairs.
-    timings = _timings_from_bytes(_heat_30_high_bytes())[: 2 + 2 * 8 * 6]
-
-    assert FujitsuAcCommand.from_raw_timings(timings) is None
-
-
 def test_decode_tolerates_measured_receiver_distortion() -> None:
-    """Decode must survive the worst distortion measured on real hardware.
+    """Decode must survive receiver distortion on every bit at once.
 
-    Received from a transmitter running this protocol, bit marks came back as short as
-    125 us against their 420 us nominal and zero spaces as long as 688 us, while one
-    spaces stayed near 1200. Every bit here is set to that worst case at once, which is
-    harsher than anything actually captured.
+    Bit marks at 125 us against their 420 us nominal, zero spaces at 688 us, and one
+    spaces at 1125 us.
     """
     timings = _timings_from_bytes(_heat_30_high_bytes())
     for i in range(2, len(timings) - 2, 2):
